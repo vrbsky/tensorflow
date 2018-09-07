@@ -28,8 +28,7 @@ limitations under the License.
 #include "tensorflow/stream_executor/plugin.h"
 #include "tensorflow/stream_executor/rng.h"
 
-namespace perftools {
-namespace gputools {
+namespace stream_executor {
 
 namespace internal {
 class StreamExecutorInterface;
@@ -138,10 +137,6 @@ class PluginRegistry {
   bool HasFactory(const PluginFactories& factories, PluginKind plugin_kind,
                   PluginId plugin) const;
 
-  // As this object is a singleton, a global mutex can be used for static and
-  // instance protection.
-  static mutex mu_;
-
   // The singleton itself.
   static PluginRegistry* instance_;
 
@@ -164,7 +159,6 @@ class PluginRegistry {
   SE_DISALLOW_COPY_AND_ASSIGN(PluginRegistry);
 };
 
-}  // namespace gputools
-}  // namespace perftools
+}  // namespace stream_executor
 
 #endif  // TENSORFLOW_STREAM_EXECUTOR_PLUGIN_REGISTRY_H_

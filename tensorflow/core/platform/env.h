@@ -24,6 +24,7 @@ limitations under the License.
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/lib/core/stringpiece.h"
+#include "tensorflow/core/platform/env_time.h"
 #include "tensorflow/core/platform/file_system.h"
 #include "tensorflow/core/platform/macros.h"
 #include "tensorflow/core/platform/mutex.h"
@@ -67,9 +68,12 @@ class Env {
   /// \brief Returns the file system schemes registered for this Env.
   virtual Status GetRegisteredFileSystemSchemes(std::vector<string>* schemes);
 
-  // \brief Register a file system for a scheme.
+  /// \brief Register a file system for a scheme.
   virtual Status RegisterFileSystem(const string& scheme,
                                     FileSystemRegistry::Factory factory);
+
+  /// \brief Flush filesystem caches for all registered filesystems.
+  Status FlushFileSystemCaches();
 
   /// \brief Creates a brand new random access read-only file with the
   /// specified name.
@@ -132,14 +136,31 @@ class Env {
   Status NewReadOnlyMemoryRegionFromFile(
       const string& fname, std::unique_ptr<ReadOnlyMemoryRegion>* result);
 
-  /// Returns true iff the named file exists.
-  bool FileExists(const string& fname);
+  /// Returns OK if the named path exists and NOT_FOUND otherwise.
+  Status FileExists(const string& fname);
+
+  /// Returns true if all the listed files exist, false otherwise.
+  /// if status is not null, populate the vector with a detailed status
+  /// for each file.
+  bool FilesExist(const std::vector<string>& files,
+                  std::vector<Status>* status);
 
   /// \brief Stores in *result the names of the children of the specified
   /// directory. The names are relative to "dir".
   ///
   /// Original contents of *results are dropped.
   Status GetChildren(const string& dir, std::vector<string>* result);
+
+  /// \brief Returns true if the path matches the given pattern. The wildcards
+  /// allowed in pattern are described in FileSystem::GetMatchingPaths.
+  virtual bool MatchPath(const string& path, const string& pattern) = 0;
+
+  /// \brief Given a pattern, stores in *results the set of paths that matches
+  /// that pattern. *results is cleared.
+  ///
+  /// More details about `pattern` in FileSystem::GetMatchingPaths.
+  virtual Status GetMatchingPaths(const string& pattern,
+                                  std::vector<string>* results);
 
   /// Deletes the named file.
   Status DeleteFile(const string& fname);
@@ -193,17 +214,32 @@ class Env {
   /// replaced.
   Status RenameFile(const string& src, const string& target);
 
+  /// \brief Copy the src to target.
+  Status CopyFile(const string& src, const string& target);
+
+  /// \brief Returns the absolute path of the current executable. It resolves
+  /// symlinks if there is any.
+  string GetExecutablePath();
+
+  /// Creates a local unique temporary file name. Returns true if success.
+  bool LocalTempFilename(string* filename);
+
+  /// Creates a local unique file name that starts with |prefix| and ends with
+  /// |suffix|. Returns true if success.
+  bool CreateUniqueFileName(string* prefix, const string& suffix);
+
   // TODO(jeff,sanjay): Add back thread/thread-pool support if needed.
   // TODO(jeff,sanjay): if needed, tighten spec so relative to epoch, or
   // provide a routine to get the absolute time.
 
-  /// \brief Returns the number of micro-seconds since some fixed point in
-  /// time. Only useful for computing deltas of time.
-  virtual uint64 NowMicros() = 0;
+  /// \brief Returns the number of nano-seconds since the Unix epoch.
+  virtual uint64 NowNanos() { return envTime->NowNanos(); }
 
-  /// \brief Returns the number of seconds since some fixed point in
-  /// time. Only useful for computing deltas of time.
-  virtual uint64 NowSeconds() { return NowMicros() / 1000000L; }
+  /// \brief Returns the number of micro-seconds since the Unix epoch.
+  virtual uint64 NowMicros() { return envTime->NowMicros(); }
+
+  /// \brief Returns the number of seconds since the Unix epoch.
+  virtual uint64 NowSeconds() { return envTime->NowSeconds(); }
 
   /// Sleeps/delays the thread for the prescribed number of micro-seconds.
   virtual void SleepForMicroseconds(int64 micros) = 0;
@@ -250,12 +286,21 @@ class Env {
   virtual Status GetSymbolFromLibrary(void* handle, const char* symbol_name,
                                       void** symbol) = 0;
 
- private:
-  /// No copying allowed
-  Env(const Env&);
-  void operator=(const Env&);
+  // \brief build the name of dynamic library.
+  //
+  // "name" should be name of the library.
+  // "version" should be the version of the library or NULL
+  // returns the name that LoadLibrary() can use
+  virtual string FormatLibraryFileName(const string& name,
+                                       const string& version) = 0;
 
+  // Returns a possible list of local temporary directories.
+  virtual void GetLocalTempDirectories(std::vector<string>* list) = 0;
+
+ private:
   std::unique_ptr<FileSystemRegistry> file_system_registry_;
+  TF_DISALLOW_COPY_AND_ASSIGN(Env);
+  EnvTime* envTime = EnvTime::Default();
 };
 
 /// \brief An implementation of Env that forwards all calls to another Env.
@@ -285,6 +330,10 @@ class EnvWrapper : public Env {
     return target_->RegisterFileSystem(scheme, factory);
   }
 
+  bool MatchPath(const string& path, const string& pattern) override {
+    return target_->MatchPath(path, pattern);
+  }
+
   uint64 NowMicros() override { return target_->NowMicros(); }
   void SleepForMicroseconds(int64 micros) override {
     target_->SleepForMicroseconds(micros);
@@ -306,11 +355,20 @@ class EnvWrapper : public Env {
                               void** symbol) override {
     return target_->GetSymbolFromLibrary(handle, symbol_name, symbol);
   }
+  string FormatLibraryFileName(const string& name,
+                               const string& version) override {
+    return target_->FormatLibraryFileName(name, version);
+  }
 
  private:
+  void GetLocalTempDirectories(std::vector<string>* list) override {
+    target_->GetLocalTempDirectories(list);
+  }
+
   Env* target_;
 };
 
+/// Represents a thread used to run a Tensorflow function.
 class Thread {
  public:
   Thread() {}
@@ -319,9 +377,7 @@ class Thread {
   virtual ~Thread();
 
  private:
-  /// No copying allowed
-  Thread(const Thread&);
-  void operator=(const Thread&);
+  TF_DISALLOW_COPY_AND_ASSIGN(Thread);
 };
 
 /// \brief Options to configure a Thread.
@@ -335,6 +391,11 @@ struct ThreadOptions {
   size_t guard_size = 0;  // 0: use system default value
 };
 
+/// A utility routine: copy contents of `src` in file system `src_fs`
+/// to `target` in file system `target_fs`.
+Status FileSystemCopyFile(FileSystem* src_fs, const string& src,
+                          FileSystem* target_fs, const string& target);
+
 /// A utility routine: reads contents of named file into `*data`
 Status ReadFileToString(Env* env, const string& fname, string* data);
 
@@ -343,22 +404,40 @@ Status ReadFileToString(Env* env, const string& fname, string* data);
 Status WriteStringToFile(Env* env, const string& fname,
                          const StringPiece& data);
 
+/// Write binary representation of "proto" to the named file.
+Status WriteBinaryProto(Env* env, const string& fname,
+                        const ::tensorflow::protobuf::MessageLite& proto);
+
 /// Reads contents of named file and parse as binary encoded proto data
 /// and store into `*proto`.
 Status ReadBinaryProto(Env* env, const string& fname,
                        ::tensorflow::protobuf::MessageLite* proto);
+
+/// Write the text representation of "proto" to the named file.
+Status WriteTextProto(Env* env, const string& fname,
+                      const ::tensorflow::protobuf::Message& proto);
+
+/// Read contents of named file and parse as text encoded proto data
+/// and store into `*proto`.
+Status ReadTextProto(Env* env, const string& fname,
+                     ::tensorflow::protobuf::Message* proto);
+
+// START_SKIP_DOXYGEN
 
 namespace register_file_system {
 
 template <typename Factory>
 struct Register {
   Register(Env* env, const string& scheme) {
-    env->RegisterFileSystem(scheme,
-                            []() -> FileSystem* { return new Factory; });
+    // TODO(b/32704451): Don't just ignore the ::tensorflow::Status object!
+    env->RegisterFileSystem(scheme, []() -> FileSystem* { return new Factory; })
+        .IgnoreError();
   }
 };
 
 }  // namespace register_file_system
+
+// END_SKIP_DOXYGEN
 
 }  // namespace tensorflow
 
@@ -374,6 +453,6 @@ struct Register {
           ::tensorflow::register_file_system::Register<factory>(env, scheme)
 
 #define REGISTER_FILE_SYSTEM(scheme, factory) \
-  REGISTER_FILE_SYSTEM_ENV(Env::Default(), scheme, factory);
+  REGISTER_FILE_SYSTEM_ENV(::tensorflow::Env::Default(), scheme, factory);
 
 #endif  // TENSORFLOW_CORE_PLATFORM_ENV_H_

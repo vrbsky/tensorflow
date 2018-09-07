@@ -23,76 +23,73 @@ limitations under the License.
 
 namespace tensorflow {
 
-TEST(MathOpsTest, LookupTableFind) {
+TEST(DataFlowOpsTest, LookupTableFind) {
   ShapeInferenceTestOp op("LookupTableFind");
   INFER_OK(op, "?;?;?", "?");
-  INFER_OK(op, "[];[];[]", "?");
-  INFER_OK(op, "[];[1,2,3];[]", "?");
+  INFER_OK(op, "[2];[];[]", "?");
+  INFER_OK(op, "[?];[1,2,3];[]", "?");
 
-  // Dims 0 and 2 (table_handle and default_value must be scalars.
-  INFER_ERROR("Shape must be rank 0 but is rank 1", op, "[1];[1,2,3];[]");
-  INFER_ERROR("Shape must be rank 0 but is rank 2", op, "[];[1,2,3];[1,2]");
+  // Last input must be a scalar or vector
+  INFER_ERROR("Shape must be at most rank 1 but is rank 2", op,
+              "[?];[1,2,3];[1,2]");
 }
 
-TEST(MathOpsTest, LookupTableInsert) {
+TEST(DataFlowOpsTest, LookupTableInsert) {
   ShapeInferenceTestOp op("LookupTableInsert");
   INFER_OK(op, "?;?;?", "");
-  INFER_OK(op, "[];[];[]", "");
+  INFER_OK(op, "[2];[];[]", "");
 
-  // Dim 0 (table handle) must be a scalar.
-  INFER_ERROR("Shape must be rank 0 but is rank 1", op, "[1];[1,2,3];[]");
-
-  // Dims 1 and 2 (keys and values) are the same.
-  INFER_OK(op, "[];[1,?,3];[?,2,?]", "");
-  INFER_ERROR("Dimension 2 in both shapes must be equal, but are 3 and 4", op,
-              "[];[1,?,3];[?,2,4]");
+  // Dim 0 (table handle) must be a vector.
+  INFER_ERROR("Shape must be rank 1 but is rank 0", op, "[];[1,2,3];[]");
+  INFER_OK(op, "[2];[1,?,3];[?,2,?]", "");
 }
 
-TEST(MathOpsTest, LookupTableSize) {
+TEST(DataFlowOpsTest, LookupTableSize) {
   ShapeInferenceTestOp op("LookupTableSize");
   // Always scalar output.
   INFER_OK(op, "?", "[]");
-  INFER_OK(op, "[]", "[]");
+  INFER_OK(op, "[2]", "[]");
 
-  // Dim 0 (table handle) must be a scalar.
-  INFER_ERROR("Shape must be rank 0 but is rank 1", op, "[1]");
+  // Dim 0 (table handle) must be a vector of length 2
+  INFER_ERROR("Shape must be rank 1 but is rank 0", op, "[]");
+  INFER_ERROR("Dimension must be 2 but is 3", op, "[3]");
 }
 
-TEST(MathOpsTest, LookupTableExport) {
+TEST(DataFlowOpsTest, LookupTableExport) {
   ShapeInferenceTestOp op("LookupTableExport");
   // Always one vector output and one unknown size output.
   INFER_OK(op, "?", "[?];?");
-  INFER_OK(op, "[]", "[?];?");
+  INFER_OK(op, "[2]", "[?];?");
 
-  // Dim 0 (table handle) must be a scalar.
-  INFER_ERROR("Shape must be rank 0 but is rank 1", op, "[1]");
+  // Dim 0 (table handle) must be a vector.
+  INFER_ERROR("Shape must be rank 1 but is rank 0", op, "[]");
 }
 
-TEST(MathOpsTest, InitializeTable) {
+TEST(DataFlowOpsTest, InitializeTable) {
   ShapeInferenceTestOp op("InitializeTable");
   // Always no output.
   INFER_OK(op, "?;?;?", "");
 
-  // Dim 0 (table handle) must be a scalar.
-  INFER_ERROR("Shape must be rank 0 but is rank 1", op, "[1];[];[]");
+  // Dim 0 (table handle) must be a vector.
+  INFER_ERROR("Shape must be rank 1 but is rank 0", op, "[];[];[]");
 
   // Dims 1 and 2 (keys and values) are the same size and must be vectors.
   INFER_ERROR("Dimension 0 in both shapes must be equal, but are 1 and 2", op,
               "?;[1];[2]");
-  INFER_ERROR("Shape must be rank 1 but is rank 2", op, "?;[1,2];[1,2]");
+  INFER_ERROR("Shape must be rank 1 but is rank 2", op, "[2];[1,2];[1,2]");
 }
 
-TEST(MathOpsTest, InitializeTableFromTextFile) {
+TEST(DataFlowOpsTest, InitializeTableFromTextFile) {
   ShapeInferenceTestOp op("InitializeTableFromTextFile");
   // Always no output.
   INFER_OK(op, "?;?", "");
 
-  // Dim 0 (table handle) and Dim 1 (filename) must be scalars.
-  INFER_ERROR("Shape must be rank 0 but is rank 1", op, "[1];[]");
-  INFER_ERROR("Shape must be rank 0 but is rank 1", op, "[];[1]");
+  // Dim 1 (filename) must be scalar, dim 0 vector
+  INFER_ERROR("Shape must be rank 1 but is rank 0", op, "[];[]");
+  INFER_ERROR("Shape must be rank 0 but is rank 1", op, "[2];[1]");
 }
 
-TEST(MathOpsTest, DynamicPartition) {
+TEST(DataFlowOpsTest, DynamicPartition) {
   ShapeInferenceTestOp op("DynamicPartition");
   TF_ASSERT_OK(NodeDefBuilder("test", "DynamicPartition")
                    .Input("data", 0, DT_FLOAT_REF)
@@ -120,10 +117,54 @@ TEST(MathOpsTest, DynamicPartition) {
               "[3,4,5];[3,100]");
 }
 
-TEST(MathOpsTest, DynamicStitch) {
+TEST(DataFlowOpsTest, DynamicStitch) {
   ShapeInferenceTestOp op("DynamicStitch");
   TF_ASSERT_OK(
       NodeDefBuilder("test", "DynamicStitch")
+          .Input({{"indices", 0, DT_INT32}, {"indices_2", 1, DT_INT32}})
+          .Input({{"data", 0, DT_FLOAT}, {"data_2", 1, DT_FLOAT}})
+          .Attr("N", 2)
+          .Finalize(&op.node_def));
+
+  // Bad prefix for the second data input.
+  INFER_ERROR("Dimensions must be equal, but are 10 and 5", op,
+              "[2,3];[5,6];[2,3,4,5];[10,11,4,5]");
+
+  // Inconsistent suffix dimensions
+  INFER_ERROR("Dimension 0 in both shapes must be equal, but are 4 and 13", op,
+              "[2,3];[5,6];[2,3,4,5];[5,6,13,14]");
+
+  // Good case, but no known input tensors.
+  INFER_OK(op, "[2,3];[5,6];[2,3,4,5];[5,6,4,5]", "[?,d2_2,d2_3]");
+
+  // 1 known input tensors, not enough to change answer.
+  Tensor tensor_2 = test::AsTensor<int32>(
+      std::vector<int32>{2, 4, 6, 0, 10, 11}, TensorShape({2, 3}));
+  Tensor tensor_5 = test::AsTensor<int32>(
+      std::vector<int32>{0,    1,  2,  3,  4,  5,  6,  7,  8,  9,
+                         10,   11, 12, 13, 14, 15, 16, 17, 18, 19,
+                         1000, 21, 22, 23, 24, 25, 26, 27, 28, 29},
+      TensorShape({5, 6}));
+  op.input_tensors.push_back(nullptr);
+  op.input_tensors.push_back(&tensor_5);
+  INFER_OK(op, "[2,3];[5,6];[2,3,4,5];[5,6,4,5]", "[?,d2_2,d2_3]");
+
+  op.input_tensors[0] = &tensor_2;
+  op.input_tensors[1] = nullptr;
+  INFER_OK(op, "[2,3];[5,6];[2,3,4,5];[5,6,4,5]", "[?,d2_2,d2_3]");
+  INFER_OK(op, "[2,3];?;[2,3,4,5];[5,6,4,5]", "[?,d2_2,d2_3]");
+
+  op.input_tensors[1] = &tensor_5;
+  INFER_OK(op, "[2,3];[5,6];[2,3,4,5];[5,6,4,5]", "[1001,d2_2,d2_3]");
+
+  tensor_2.flat<int32>()(3) = 10000;
+  INFER_OK(op, "[2,3];[5,6];[2,3,4,5];[5,6,4,5]", "[10001,d2_2,d2_3]");
+}
+
+TEST(DataFlowOpsTest, ParallelDynamicStitch) {
+  ShapeInferenceTestOp op("ParallelDynamicStitch");
+  TF_ASSERT_OK(
+      NodeDefBuilder("test", "ParallelDynamicStitch")
           .Input({{"indices", 0, DT_INT32}, {"indices_2", 1, DT_INT32}})
           .Input({{"data", 0, DT_FLOAT}, {"data_2", 1, DT_FLOAT}})
           .Attr("N", 2)
@@ -138,6 +179,113 @@ TEST(MathOpsTest, DynamicStitch) {
   // Inconsistent suffix dimensions
   INFER_ERROR("Dimension 0 in both shapes must be equal, but are 4 and 13", op,
               "[2,3];[5,6];[2,3,4,5];[5,6,13,14]");
+}
+
+TEST(DataFlowOpsTest, TensorArrayV3) {
+  ShapeInferenceTestOp op("TensorArrayV3");
+  TF_ASSERT_OK(NodeDefBuilder("test", "TensorArrayV3")
+                   .Input({"size", 0, DT_INT32})
+                   .Attr("dtype", DT_FLOAT)
+                   .Finalize(&op.node_def));
+
+  INFER_OK(op, "[]", "[2];[]");
+  INFER_OK(op, "?", "[2];[]");
+  INFER_ERROR("Shape must be rank 0 but is rank 1", op, "[2]");
+}
+
+TEST(DataFlowOpsTest, QueueDequeueV2ShapeFn) {
+  ShapeInferenceTestOp op("QueueDequeueV2");
+  TF_ASSERT_OK(NodeDefBuilder("test", op.name)
+                   .Input("handle", 0, DT_RESOURCE)
+                   .Attr("component_types", {DT_FLOAT, DT_INT32})
+                   .Finalize(&op.node_def));
+
+  INFER_OK(op, "?", "?;?");
+
+  std::vector<ShapeInferenceTestOp::ShapeAndType> shapes_and_types;
+  op.input_resource_handle_shapes_and_types.push_back(&shapes_and_types);
+  INFER_OK(op, "?", "?;?");
+
+  // Wrong number of shapes provided by handle.
+  shapes_and_types.emplace_back("[1,?,3]", DT_FLOAT);
+  INFER_OK(op, "?", "?;?");
+
+  // Correct number of shapes provided by handle.
+  shapes_and_types.emplace_back("[?,2]", DT_FLOAT);
+  INFER_OK(op, "?", "[1,?,3];[?,2]");
+}
+
+TEST(DataFlowOpsTest, QueueDequeueManyV2ShapeFn) {
+  ShapeInferenceTestOp op("QueueDequeueManyV2");
+  TF_ASSERT_OK(NodeDefBuilder("test", op.name)
+                   .Input("handle", 0, DT_RESOURCE)
+                   .Input("n", 0, DT_INT32)
+                   .Attr("component_types", {DT_FLOAT, DT_INT32})
+                   .Finalize(&op.node_def));
+
+  ////////////////////////////
+  // Input n is not a constant.
+  INFER_OK(op, "?;?", "?;?");
+  std::vector<ShapeInferenceTestOp::ShapeAndType> shapes_and_types;
+  op.input_resource_handle_shapes_and_types.push_back(&shapes_and_types);
+  op.input_resource_handle_shapes_and_types.push_back(nullptr);
+  // Wrong number of shapes provided by handle.
+  shapes_and_types.emplace_back("[1,?,3]", DT_FLOAT);
+  INFER_OK(op, "?;?", "?;?");
+  // Correct number of shapes provided by handle.
+  shapes_and_types.emplace_back("[?,2]", DT_FLOAT);
+  INFER_OK(op, "?;?", "[?,1,?,3];[?,?,2]");
+
+  ////////////////////////////
+  // Input n is a constant. (set up test and repeat the cases from above).
+  Tensor n_tensor = test::AsScalar(12);
+  op.input_tensors.push_back(nullptr);
+  op.input_tensors.push_back(&n_tensor);
+  op.input_resource_handle_shapes_and_types.clear();
+  shapes_and_types.clear();
+
+  INFER_OK(op, "?;?", "?;?");
+  op.input_resource_handle_shapes_and_types.push_back(&shapes_and_types);
+  op.input_resource_handle_shapes_and_types.push_back(nullptr);
+  // Wrong number of shapes provided by handle.
+  shapes_and_types.emplace_back("[1,?,3]", DT_FLOAT);
+  INFER_OK(op, "?;?", "?;?");
+  // Correct number of shapes provided by handle.
+  shapes_and_types.emplace_back("[?,2]", DT_FLOAT);
+  INFER_OK(op, "?;?", "[12,1,?,3];[12,?,2]");
+
+  n_tensor = test::AsScalar<int32>(-1);  // invalid value of n.
+  INFER_ERROR("must be >= 0", op, "?;?");
+}
+
+TEST(DataFlowOpsTest, QueueDequeueUpToV2ShapeFn) {
+  // Results are the same regardless of what value is passed for n.
+  for (int pass = 0; pass < 2; ++pass) {
+    ShapeInferenceTestOp op("QueueDequeueUpToV2");
+    TF_ASSERT_OK(NodeDefBuilder("test", op.name)
+                     .Input("handle", 0, DT_RESOURCE)
+                     .Input("n", 0, DT_INT32)
+                     .Attr("component_types", {DT_FLOAT, DT_INT32})
+                     .Finalize(&op.node_def));
+
+    Tensor n_tensor = test::AsScalar(12);
+    if (pass == 1) {
+      // Second pass, pass value of <n> as a constant.
+      op.input_tensors.push_back(nullptr);
+      op.input_tensors.push_back(&n_tensor);
+    }
+
+    INFER_OK(op, "?;?", "?;?");
+    std::vector<ShapeInferenceTestOp::ShapeAndType> shapes_and_types;
+    op.input_resource_handle_shapes_and_types.push_back(&shapes_and_types);
+    op.input_resource_handle_shapes_and_types.push_back(nullptr);
+    // Wrong number of shapes provided by handle.
+    shapes_and_types.emplace_back("[1,?,3]", DT_FLOAT);
+    INFER_OK(op, "?;?", "?;?");
+    // Correct number of shapes provided by handle.
+    shapes_and_types.emplace_back("[?,2]", DT_FLOAT);
+    INFER_OK(op, "?;?", "[?,1,?,3];[?,?,2]");
+  }
 }
 
 }  // end namespace tensorflow

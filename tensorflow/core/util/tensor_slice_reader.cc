@@ -22,7 +22,6 @@ limitations under the License.
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/gtl/stl_util.h"
 #include "tensorflow/core/lib/io/iterator.h"
-#include "tensorflow/core/lib/io/match.h"
 #include "tensorflow/core/lib/io/table.h"
 #include "tensorflow/core/lib/io/table_options.h"
 #include "tensorflow/core/platform/env.h"
@@ -103,14 +102,15 @@ TensorSliceReader::TensorSliceReader(const string& filepattern)
 
 TensorSliceReader::TensorSliceReader(const string& filepattern,
                                      OpenTableFunction open_function)
-    : TensorSliceReader(filepattern, open_function, kLoadAllShards) {}
+    : TensorSliceReader(filepattern, std::move(open_function), kLoadAllShards) {
+}
 
 TensorSliceReader::TensorSliceReader(const string& filepattern,
                                      OpenTableFunction open_function,
                                      int preferred_shard)
     : filepattern_(filepattern), open_function_(std::move(open_function)) {
   VLOG(1) << "TensorSliceReader for " << filepattern;
-  Status s = io::GetMatchingFiles(Env::Default(), filepattern, &fnames_);
+  Status s = Env::Default()->GetMatchingPaths(filepattern, &fnames_);
   if (!s.ok()) {
     status_ = errors::InvalidArgument(
         "Unsuccessful TensorSliceReader constructor: "
@@ -260,6 +260,7 @@ Status TensorSliceReader::GetTensor(
     READER_COPY(DT_INT16);
     READER_COPY(DT_INT8);
     READER_COPY(DT_INT64);
+    READER_COPY(DT_STRING);
     default:
       return errors::Unimplemented("Data type not supported");
   }
@@ -277,11 +278,22 @@ TensorSliceReader::VarToShapeMap TensorSliceReader::GetVariableToShapeMap()
     const {
   VarToShapeMap name_to_shape;
   if (status().ok()) {
-    for (auto e : Tensors()) {
+    for (auto& e : Tensors()) {
       name_to_shape[e.first] = e.second->shape();
     }
   }
   return name_to_shape;
+}
+
+TensorSliceReader::VarToDataTypeMap
+TensorSliceReader::GetVariableToDataTypeMap() const {
+  VarToDataTypeMap name_to_dtype;
+  if (status().ok()) {
+    for (auto& e : Tensors()) {
+      name_to_dtype[e.first] = e.second->type();
+    }
+  }
+  return name_to_dtype;
 }
 
 const string TensorSliceReader::DebugString() const {

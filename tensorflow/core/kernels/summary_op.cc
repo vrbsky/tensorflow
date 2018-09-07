@@ -41,11 +41,12 @@ class SummaryScalarOp : public OpKernel {
     const Tensor& values = c->input(1);
 
     OP_REQUIRES(
-        c, tags.IsSameSize(values) ||
-               (IsLegacyScalar(tags.shape()) && IsLegacyScalar(values.shape())),
-        errors::InvalidArgument("tags and values not the same shape: ",
-                                tags.shape().DebugString(), " != ",
-                                values.shape().DebugString(), SingleTag(tags)));
+        c,
+        tags.IsSameSize(values) ||
+            (IsLegacyScalar(tags.shape()) && IsLegacyScalar(values.shape())),
+        errors::InvalidArgument(
+            "tags and values not the same shape: ", tags.shape().DebugString(),
+            " != ", values.shape().DebugString(), SingleTag(tags)));
     auto Ttags = tags.flat<string>();
     auto Tvalues = values.flat<T>();
     Summary s;
@@ -86,17 +87,17 @@ class SummaryHistoOp : public OpKernel {
     // Build histogram of values in "values" tensor
     histogram::Histogram histo;
     for (int64 i = 0; i < flat.size(); i++) {
-      T v = flat(i);
-      if (Eigen::numext::isnan(v)) {
+      const double double_val = static_cast<double>(flat(i));
+      if (Eigen::numext::isnan(double_val)) {
         c->SetStatus(
             errors::InvalidArgument("Nan in summary histogram for: ", name()));
         break;
-      } else if (Eigen::numext::isinf(v)) {
+      } else if (Eigen::numext::isinf(double_val)) {
         c->SetStatus(errors::InvalidArgument(
             "Infinity in summary histogram for: ", name()));
         break;
       }
-      histo.Add(static_cast<double>(v));
+      histo.Add(double_val);
     }
 
     Summary s;
@@ -149,7 +150,7 @@ class SummaryMergeOp : public OpKernel {
           const string& tag = summary_in.value(v).tag();
           // The tag is unused by the TensorSummary op, so no need to check
           // for duplicates.
-          if ((tag != "") && !tags.insert(tag).second) {
+          if ((!tag.empty()) && !tags.insert(tag).second) {
             c->SetStatus(errors::InvalidArgument(strings::StrCat(
                 "Duplicate tag ", tag, " found in summary inputs")));
             return;

@@ -18,6 +18,9 @@ limitations under the License.
 #include <fcntl.h>
 #include <stdio.h>
 #include <sys/mman.h>
+#if !defined(__APPLE__)
+#include <sys/sendfile.h>
+#endif
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/types.h>
@@ -25,142 +28,18 @@ limitations under the License.
 #include <unistd.h>
 
 #include "tensorflow/core/lib/core/error_codes.pb.h"
+#include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/lib/strings/strcat.h"
 #include "tensorflow/core/platform/env.h"
+#include "tensorflow/core/platform/file_system_helper.h"
 #include "tensorflow/core/platform/logging.h"
+#include "tensorflow/core/platform/posix/error.h"
 #include "tensorflow/core/platform/posix/posix_file_system.h"
 
 namespace tensorflow {
 
-namespace {
-
-error::Code ErrnoToCode(int err_number) {
-  error::Code code;
-  switch (err_number) {
-    case 0:
-      code = error::OK;
-      break;
-    case EINVAL:        // Invalid argument
-    case ENAMETOOLONG:  // Filename too long
-    case E2BIG:         // Argument list too long
-    case EDESTADDRREQ:  // Destination address required
-    case EDOM:          // Mathematics argument out of domain of function
-    case EFAULT:        // Bad address
-    case EILSEQ:        // Illegal byte sequence
-    case ENOPROTOOPT:   // Protocol not available
-    case ENOSTR:        // Not a STREAM
-    case ENOTSOCK:      // Not a socket
-    case ENOTTY:        // Inappropriate I/O control operation
-    case EPROTOTYPE:    // Protocol wrong type for socket
-    case ESPIPE:        // Invalid seek
-      code = error::INVALID_ARGUMENT;
-      break;
-    case ETIMEDOUT:  // Connection timed out
-    case ETIME:      // Timer expired
-      code = error::DEADLINE_EXCEEDED;
-      break;
-    case ENODEV:  // No such device
-    case ENOENT:  // No such file or directory
-    case ENXIO:   // No such device or address
-    case ESRCH:   // No such process
-      code = error::NOT_FOUND;
-      break;
-    case EEXIST:         // File exists
-    case EADDRNOTAVAIL:  // Address not available
-    case EALREADY:       // Connection already in progress
-      code = error::ALREADY_EXISTS;
-      break;
-    case EPERM:   // Operation not permitted
-    case EACCES:  // Permission denied
-    case EROFS:   // Read only file system
-      code = error::PERMISSION_DENIED;
-      break;
-    case ENOTEMPTY:   // Directory not empty
-    case EISDIR:      // Is a directory
-    case ENOTDIR:     // Not a directory
-    case EADDRINUSE:  // Address already in use
-    case EBADF:       // Invalid file descriptor
-    case EBUSY:       // Device or resource busy
-    case ECHILD:      // No child processes
-    case EISCONN:     // Socket is connected
-    case ENOTBLK:     // Block device required
-    case ENOTCONN:    // The socket is not connected
-    case EPIPE:       // Broken pipe
-    case ESHUTDOWN:   // Cannot send after transport endpoint shutdown
-    case ETXTBSY:     // Text file busy
-      code = error::FAILED_PRECONDITION;
-      break;
-    case ENOSPC:   // No space left on device
-    case EDQUOT:   // Disk quota exceeded
-    case EMFILE:   // Too many open files
-    case EMLINK:   // Too many links
-    case ENFILE:   // Too many open files in system
-    case ENOBUFS:  // No buffer space available
-    case ENODATA:  // No message is available on the STREAM read queue
-    case ENOMEM:   // Not enough space
-    case ENOSR:    // No STREAM resources
-    case EUSERS:   // Too many users
-      code = error::RESOURCE_EXHAUSTED;
-      break;
-    case EFBIG:      // File too large
-    case EOVERFLOW:  // Value too large to be stored in data type
-    case ERANGE:     // Result too large
-      code = error::OUT_OF_RANGE;
-      break;
-    case ENOSYS:           // Function not implemented
-    case ENOTSUP:          // Operation not supported
-    case EAFNOSUPPORT:     // Address family not supported
-    case EPFNOSUPPORT:     // Protocol family not supported
-    case EPROTONOSUPPORT:  // Protocol not supported
-    case ESOCKTNOSUPPORT:  // Socket type not supported
-    case EXDEV:            // Improper link
-      code = error::UNIMPLEMENTED;
-      break;
-    case EAGAIN:        // Resource temporarily unavailable
-    case ECONNREFUSED:  // Connection refused
-    case ECONNABORTED:  // Connection aborted
-    case ECONNRESET:    // Connection reset
-    case EINTR:         // Interrupted function call
-    case EHOSTDOWN:     // Host is down
-    case EHOSTUNREACH:  // Host is unreachable
-    case ENETDOWN:      // Network is down
-    case ENETRESET:     // Connection aborted by network
-    case ENETUNREACH:   // Network unreachable
-    case ENOLCK:        // No locks available
-    case ENOLINK:       // Link has been severed
-#if !defined(__APPLE__)
-    case ENONET:  // Machine is not on the network
-#endif
-      code = error::UNAVAILABLE;
-      break;
-    case EDEADLK:  // Resource deadlock avoided
-    case ESTALE:   // Stale file handle
-      code = error::ABORTED;
-      break;
-    case ECANCELED:  // Operation cancelled
-      code = error::CANCELLED;
-      break;
-    // NOTE: If you get any of the following (especially in a
-    // reproducible way) and can propose a better mapping,
-    // please email the owners about updating this mapping.
-    case EBADMSG:      // Bad message
-    case EIDRM:        // Identifier removed
-    case EINPROGRESS:  // Operation in progress
-    case EIO:          // I/O error
-    case ELOOP:        // Too many levels of symbolic links
-    case ENOEXEC:      // Exec format error
-    case ENOMSG:       // No message of the desired type
-    case EPROTO:       // Protocol error
-    case EREMOTE:      // Object is remote
-      code = error::UNKNOWN;
-      break;
-    default: {
-      code = error::UNKNOWN;
-      break;
-    }
-  }
-  return code;
-}
+// 128KB of copy buffer
+constexpr size_t kPosixCopyFileBufferSize = 128 * 1024;
 
 // pread() based random-access
 class PosixRandomAccessFile : public RandomAccessFile {
@@ -206,7 +85,7 @@ class PosixWritableFile : public WritableFile {
       : filename_(fname), file_(f) {}
 
   ~PosixWritableFile() override {
-    if (file_ != NULL) {
+    if (file_ != nullptr) {
       // Ignoring any potential errors
       fclose(file_);
     }
@@ -225,7 +104,7 @@ class PosixWritableFile : public WritableFile {
     if (fclose(file_) != 0) {
       result = IOError(filename_, errno);
     }
-    file_ = NULL;
+    file_ = nullptr;
     return result;
   }
 
@@ -249,7 +128,9 @@ class PosixReadOnlyMemoryRegion : public ReadOnlyMemoryRegion {
  public:
   PosixReadOnlyMemoryRegion(const void* address, uint64 length)
       : address_(address), length_(length) {}
-  ~PosixReadOnlyMemoryRegion() { munmap(const_cast<void*>(address_), length_); }
+  ~PosixReadOnlyMemoryRegion() override {
+    munmap(const_cast<void*>(address_), length_);
+  }
   const void* data() override { return address_; }
   uint64 length() override { return length_; }
 
@@ -257,8 +138,6 @@ class PosixReadOnlyMemoryRegion : public ReadOnlyMemoryRegion {
   const void* const address_;
   const uint64 length_;
 };
-
-}  // namespace
 
 Status PosixFileSystem::NewRandomAccessFile(
     const string& fname, std::unique_ptr<RandomAccessFile>* result) {
@@ -278,7 +157,7 @@ Status PosixFileSystem::NewWritableFile(const string& fname,
   string translated_fname = TranslateName(fname);
   Status s;
   FILE* f = fopen(translated_fname.c_str(), "w");
-  if (f == NULL) {
+  if (f == nullptr) {
     s = IOError(fname, errno);
   } else {
     result->reset(new PosixWritableFile(translated_fname, f));
@@ -291,7 +170,7 @@ Status PosixFileSystem::NewAppendableFile(
   string translated_fname = TranslateName(fname);
   Status s;
   FILE* f = fopen(translated_fname.c_str(), "a");
-  if (f == NULL) {
+  if (f == nullptr) {
     s = IOError(fname, errno);
   } else {
     result->reset(new PosixWritableFile(translated_fname, f));
@@ -321,8 +200,11 @@ Status PosixFileSystem::NewReadOnlyMemoryRegionFromFile(
   return s;
 }
 
-bool PosixFileSystem::FileExists(const string& fname) {
-  return access(TranslateName(fname).c_str(), F_OK) == 0;
+Status PosixFileSystem::FileExists(const string& fname) {
+  if (access(TranslateName(fname).c_str(), F_OK) == 0) {
+    return Status::OK();
+  }
+  return errors::NotFound(fname, " not found");
 }
 
 Status PosixFileSystem::GetChildren(const string& dir,
@@ -330,11 +212,11 @@ Status PosixFileSystem::GetChildren(const string& dir,
   string translated_dir = TranslateName(dir);
   result->clear();
   DIR* d = opendir(translated_dir.c_str());
-  if (d == NULL) {
+  if (d == nullptr) {
     return IOError(dir, errno);
   }
   struct dirent* entry;
-  while ((entry = readdir(d)) != NULL) {
+  while ((entry = readdir(d)) != nullptr) {
     StringPiece basename = entry->d_name;
     if ((basename != ".") && (basename != "..")) {
       result->push_back(entry->d_name);
@@ -342,6 +224,11 @@ Status PosixFileSystem::GetChildren(const string& dir,
   }
   closedir(d);
   return Status::OK();
+}
+
+Status PosixFileSystem::GetMatchingPaths(const string& pattern,
+                                         std::vector<string>* results) {
+  return internal::GetMatchingPaths(this, Env::Default(), pattern, results);
 }
 
 Status PosixFileSystem::DeleteFile(const string& fname) {
@@ -401,13 +288,70 @@ Status PosixFileSystem::RenameFile(const string& src, const string& target) {
   return result;
 }
 
-Status IOError(const string& context, int err_number) {
-  auto code = ErrnoToCode(err_number);
-  if (code == error::UNKNOWN) {
-    return Status(code, strings::StrCat(context, "; ", strerror(err_number)));
-  } else {
-    return Status(code, context);
+Status PosixFileSystem::CopyFile(const string& src, const string& target) {
+  string translated_src = TranslateName(src);
+  struct stat sbuf;
+  if (stat(translated_src.c_str(), &sbuf) != 0) {
+    return IOError(src, errno);
   }
+  int src_fd = open(translated_src.c_str(), O_RDONLY);
+  if (src_fd < 0) {
+    return IOError(src, errno);
+  }
+  string translated_target = TranslateName(target);
+  // O_WRONLY | O_CREAT:
+  //   Open file for write and if file does not exist, create the file.
+  // S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH:
+  //   Create the file with permission of 0644
+  int target_fd = open(translated_target.c_str(), O_WRONLY | O_CREAT,
+                       S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+  if (target_fd < 0) {
+    close(src_fd);
+    return IOError(target, errno);
+  }
+  int rc = 0;
+  off_t offset = 0;
+  std::unique_ptr<char[]> buffer(new char[kPosixCopyFileBufferSize]);
+  while (offset < sbuf.st_size) {
+    // Use uint64 for safe compare SSIZE_MAX
+    uint64 chunk = sbuf.st_size - offset;
+    if (chunk > SSIZE_MAX) {
+      chunk = SSIZE_MAX;
+    }
+#if defined(__linux__) && !defined(__ANDROID__)
+    rc = sendfile(target_fd, src_fd, &offset, static_cast<size_t>(chunk));
+#else
+    if (chunk > kPosixCopyFileBufferSize) {
+      chunk = kPosixCopyFileBufferSize;
+    }
+    rc = read(src_fd, buffer.get(), static_cast<size_t>(chunk));
+    if (rc <= 0) {
+      break;
+    }
+    rc = write(target_fd, buffer.get(), static_cast<size_t>(chunk));
+    offset += chunk;
+#endif
+    if (rc <= 0) {
+      break;
+    }
+  }
+
+  Status result = Status::OK();
+  if (rc < 0) {
+    result = IOError(target, errno);
+  }
+
+  // Keep the error code
+  rc = close(target_fd);
+  if (rc < 0 && result == Status::OK()) {
+    result = IOError(target, errno);
+  }
+  rc = close(src_fd);
+  if (rc < 0 && result == Status::OK()) {
+    result = IOError(target, errno);
+  }
+
+  return result;
 }
 
 }  // namespace tensorflow

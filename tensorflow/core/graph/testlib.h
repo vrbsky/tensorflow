@@ -15,8 +15,8 @@ limitations under the License.
 
 // DEPRECATED: Use the C++ API defined in tensorflow/cc instead.
 
-#ifndef TENSORFLOW_GRAPH_TESTLIB_H_
-#define TENSORFLOW_GRAPH_TESTLIB_H_
+#ifndef TENSORFLOW_CORE_GRAPH_TESTLIB_H_
+#define TENSORFLOW_CORE_GRAPH_TESTLIB_H_
 
 #include <string>
 #include <vector>
@@ -77,6 +77,9 @@ Node* Reduce(Graph* g, const string& reduce, Node* data, Node* axes,
 Node* Matmul(Graph* g, Node* in0, Node* in1, bool transpose_a,
              bool transpose_b);
 
+// Adds a Matmul node in g doing in0.contract(in1).
+Node* BatchMatmul(Graph* g, Node* in0, Node* in1, bool adj_x, bool adj_y);
+
 // Adds a Quantize node into g that quantize floats into QUINT8. The range of
 // the input float tensor is assumed to be [-1, 1].
 Node* QuantizeToUINT8(Graph* g, Node* data);
@@ -97,6 +100,9 @@ Node* Multi(Graph* g, const string& func, gtl::ArraySlice<Node*> ins);
 // Adds a binary add node in "g" doing in0 + in1.
 Node* Add(Graph* g, Node* in0, Node* in1);
 
+// Reverses <axis> dimensions of <tensor>>
+Node* Reverse(Graph* g, Node* tensor, Node* axis);
+
 // Generates random unit uniform distribution of the input shape.
 Node* RandomUniform(Graph* g, Node* input, DataType dtype);
 
@@ -106,6 +112,14 @@ Node* RandomGaussian(Graph* g, Node* input, DataType dtype);
 // Generates random gamma distribution with the given shape and alpha[s].
 // Output dtype determined by alpha.
 Node* RandomGamma(Graph* g, Node* shape, Node* alpha);
+
+// Generates random poisson distribution with the given shape and lam[s].
+// Output dtype determined by lam.
+Node* RandomPoisson(Graph* g, Node* shape, Node* lam);
+
+// Rolls tensor by an offset of <shift> along the corresponding
+// <axis> dimensions.
+Node* Roll(Graph* g, Node* input, Node* shift, Node* axis);
 
 // Generates random parameters from the truncated standard normal distribution
 // of the nput shape
@@ -161,11 +175,8 @@ Node* Select(Graph* g, Node* c, Node* inx, Node* iny);
 // Casts "in" into data type "dst".
 Node* Cast(Graph* g, Node* in, DataType dst);
 
-// Perform gather op on params "in0" with indicies "in1".
-Node* Gather(Graph* g, Node* in0, Node* in1);
-
-// Computes the args needed broadcast gradient function.
-Node* BroadcastGradientArgs(Graph* g, Node* s0, Node* s1);
+// Perform gather op on params "in0" with indices "in1" and axis "axis".
+Node* Gather(Graph* g, Node* in0, Node* in1, Node* axis);
 
 // Gets a tensor stored in the session state.
 Node* GetSessionTensor(Graph* g, Node* in);
@@ -174,6 +185,11 @@ Node* GetSessionTensor(Graph* g, Node* in);
 // dimension to concatenate on, and the tensors to concatenate are
 // given in "tensors".
 Node* Concat(Graph* g, Node* concat_dim, gtl::ArraySlice<Node*> tensors);
+
+// Adds a ConcatV2 node in "g". The last input is "concat_dim", the
+// dimension to concatenate on, and the tensors to concatenate are
+// given in "tensors".
+Node* ConcatV2(Graph* g, gtl::ArraySlice<Node*> tensors, Node* concat_dim);
 
 // Add a Relu node in "g".
 Node* Relu(Graph* g, Node* in);
@@ -187,8 +203,23 @@ Node* BiasAdd(Graph* g, Node* value, Node* bias);
 // Add a Conv2D node in "g".
 Node* Conv2D(Graph* g, Node* in0, Node* in1);
 
+// Add a Diag node in "g".
+Node* Diag(Graph* g, Node* in, DataType type);
+
+// Add a DiagPart node in "g".
+Node* DiagPart(Graph* g, Node* in, DataType type);
+
+// Add a CheckNumerics node in "g".
+Node* CheckNumerics(Graph* g, Node* in, const string& message);
+
+// Add an _Arg node in "g".
+Node* Arg(Graph* g, int64 index, DataType type);
+
+// Add a _Retval node in "g".
+Node* Retval(Graph* g, int64 index, Node* in);
+
 }  // end namespace graph
 }  // end namespace test
 }  // end namespace tensorflow
 
-#endif  // TENSORFLOW_GRAPH_TESTLIB_H_
+#endif  // TENSORFLOW_CORE_GRAPH_TESTLIB_H_

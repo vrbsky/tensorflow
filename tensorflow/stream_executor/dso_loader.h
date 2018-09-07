@@ -22,16 +22,13 @@ limitations under the License.
 #include "tensorflow/stream_executor/platform/port.h"
 #include <vector>
 
-#include "cuda/cuda_config.h"
 #include "tensorflow/stream_executor/lib/status.h"
 #include "tensorflow/stream_executor/lib/statusor.h"
 #include "tensorflow/stream_executor/lib/stringpiece.h"
 #include "tensorflow/stream_executor/platform.h"
 #include "tensorflow/stream_executor/platform/mutex.h"
-#include "tensorflow/stream_executor/platform/port.h"
 
-namespace perftools {
-namespace gputools {
+namespace stream_executor {
 namespace internal {
 
 // Permits StreamExecutor code to dynamically load a pre-determined set of
@@ -56,7 +53,6 @@ class DsoLoader {
  private:
   // Registered rpaths (singleton vector) and a mutex that guards it.
   static std::vector<string>* GetRpaths();
-  static mutex rpath_mutex_;
 
   // Descriptive boolean wrapper to indicate whether symbols are made available
   // to resolve in later-loaded libraries.
@@ -73,11 +69,6 @@ class DsoLoader {
   // executing program. If strip_executable_name is true, the executable file is
   // stripped off of the path.
   static string GetBinaryDirectory(bool strip_executable_name);
-
-  // Returns the location of the runfiles directory.
-  // * Manual invocation gets the runfiles as a relative path to the current
-  //   executable.
-  static string GetRunfilesDirectory();
 
   // Invokes realpath on the original path; updates candidate and returns true
   // if it succeeds (i.e. a file exists at the path); otherwise, returns false.
@@ -122,7 +113,6 @@ class CachedDsoLoader {
 };
 
 }  // namespace internal
-}  // namespace gputools
-}  // namespace perftools
+}  // namespace stream_executor
 
 #endif  // TENSORFLOW_STREAM_EXECUTOR_DSO_LOADER_H_

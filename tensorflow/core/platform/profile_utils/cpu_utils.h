@@ -14,8 +14,11 @@ limitations under the License.
 ==============================================================================*/
 // This class is designed to get accurate profile for programs.
 
-#ifndef TENSORFLOW_PLATFORM_PROFILEUTILS_CPU_UTILS_H__
-#define TENSORFLOW_PLATFORM_PROFILEUTILS_CPU_UTILS_H__
+#ifndef TENSORFLOW_CORE_PLATFORM_PROFILE_UTILS_CPU_UTILS_H_
+#define TENSORFLOW_CORE_PLATFORM_PROFILE_UTILS_CPU_UTILS_H_
+
+#include <chrono>
+#include <memory>
 
 #include "tensorflow/core/platform/macros.h"
 #include "tensorflow/core/platform/profile_utils/i_cpu_utils_helper.h"
@@ -25,14 +28,25 @@ limitations under the License.
 #include <sys/time.h>
 #endif
 
+#if defined(_WIN32)
+#include <intrin.h>
+#endif
+
 namespace tensorflow {
 
 namespace profile_utils {
 
+// CpuUtils is a profiling tool with static functions
+// designed to be called from multiple classes.
+// A dedicated class which inherits ICpuUtilsHelper is
+// stored as a function-local static variable which inherits
+// GetCpuUtilsHelperSingletonInstance that caches CPU information,
+// because loading CPU information may take a long time.
+// Users must call EnableClockCycleProfiling before using CpuUtils.
 class CpuUtils {
  public:
   // Constant for invalid frequency.
-  // This value is returned when the furequency is not obtained somehow.
+  // This value is returned when the frequency is not obtained somehow.
   static constexpr int64 INVALID_FREQUENCY = -1;
   static constexpr uint64 DUMMY_CYCLE_CLOCK = 1;
 
@@ -42,8 +56,13 @@ class CpuUtils {
   // This returns unsigned int because there is no guarantee that rdtsc
   // is less than 2 ^ 61.
   static inline uint64 GetCurrentClockCycle() {
+#if defined(__ANDROID__)
+    return GetCpuUtilsHelperSingletonInstance().GetCurrentClockCycle();
 // ----------------------------------------------------------------
-#if defined(__x86_64__) || defined(__amd64__)
+#elif defined(_WIN32)
+    return __rdtsc();
+// ----------------------------------------------------------------
+#elif defined(__x86_64__) || defined(__amd64__)
     uint64_t high, low;
     __asm__ volatile("rdtsc" : "=a"(low), "=d"(high));
     return (high << 32) | low;
@@ -82,24 +101,21 @@ class CpuUtils {
 #endif
   }
 
-  // Return cpu frequency. As this method caches the cpu frequency internally,
-  // there is no overhead except function call to call this method.
-  static int64 GetCpuFrequency();
+// Return cycle counter frequency.
+// As this method caches the cpu frequency internally,
+// the first call will incur overhead, but not subsequent calls.
+#if (defined(__powerpc__) ||                                             \
+     defined(__ppc__) && (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)) || \
+    (defined(__s390x__))
+  static uint64 GetCycleCounterFrequency();
+#else
+  static int64 GetCycleCounterFrequency();
+#endif
 
-  // Return cached cpu count per each micro second.
+  // Return micro second per each clock
   // As this method caches the cpu frequency internally,
-  // there is no overhead except function call to call this method.
-  static int GetClockPerMicroSec();
-
-  // Return micro secound per each clock
-  // As this method caches the cpu frequency internally,
-  // there is no overhead except function call to call this method.
+  // the first call will incur overhead, but not subsequent calls.
   static double GetMicroSecPerClock();
-
-  // Initialize CpuUtils
-  // This method is called from the static initializer declared in cpu_utils.cc
-  // This initializes state and cached static variables declared in functions.
-  static void Initialize();
 
   // Reset clock cycle
   // Resetting clock cycle is recommended to prevent
@@ -108,16 +124,20 @@ class CpuUtils {
 
   // Enable clock cycle profile
   // You can enable / disable profile if it's supported by the platform
-  static void EnableClockCycleProfile(bool enable);
+  static void EnableClockCycleProfiling(bool enable);
+
+  // Return chrono::duration per each clock
+  static std::chrono::duration<double> ConvertClockCycleToTime(
+      const int64 clock_cycle);
 
  private:
   class DefaultCpuUtilsHelper : public ICpuUtilsHelper {
    public:
     DefaultCpuUtilsHelper() = default;
-    void Initialize() final {}
     void ResetClockCycle() final {}
     uint64 GetCurrentClockCycle() final { return DUMMY_CYCLE_CLOCK; }
-    void EnableClockCycleProfile(bool /* enable */) final {}
+    void EnableClockCycleProfiling(bool /* enable */) final {}
+    int64 CalculateCpuFrequency() final { return INVALID_FREQUENCY; }
 
    private:
     TF_DISALLOW_COPY_AND_ASSIGN(DefaultCpuUtilsHelper);
@@ -127,9 +147,15 @@ class CpuUtils {
   // CAVEAT: as this method calls system call and parse the mssage,
   // this call may be slow. This is why this class caches the value by
   // StaticVariableInitializer.
-  static int64 GetCpuFrequencyImpl();
+  static int64 GetCycleCounterFrequencyImpl();
 
-  static ICpuUtilsHelper& GetCpuUtilsHelper();
+  // Return a singleton of ICpuUtilsHelper
+  // ICpuUtilsHelper is declared as a function-local static variable
+  // for the following two reasons:
+  // 1. Avoid passing instances to all classes which want
+  // to use profiling tools in CpuUtils
+  // 2. Minimize the overhead of acquiring ICpuUtilsHelper
+  static ICpuUtilsHelper& GetCpuUtilsHelperSingletonInstance();
 
   TF_DISALLOW_COPY_AND_ASSIGN(CpuUtils);
 };
@@ -138,4 +164,4 @@ class CpuUtils {
 
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_PLATFORM_PROFILEUTILS_CPU_UTILS_H__
+#endif  // TENSORFLOW_CORE_PLATFORM_PROFILE_UTILS_CPU_UTILS_H_

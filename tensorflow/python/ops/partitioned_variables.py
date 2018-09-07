@@ -54,12 +54,11 @@ from __future__ import print_function
 
 import math
 
-import six  # pylint: disable=unused-import
-
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import tensor_shape
 from tensorflow.python.ops import variable_scope
 from tensorflow.python.platform import tf_logging as logging
+from tensorflow.python.util.tf_export import tf_export
 
 __all__ = [
     "create_partitioned_variables",
@@ -69,6 +68,7 @@ __all__ = [
 ]
 
 
+@tf_export("variable_axis_size_partitioner")
 def variable_axis_size_partitioner(
     max_shard_bytes, axis=0, bytes_per_string_element=16, max_shards=None):
   """Get a partitioner for VariableScope to keep shards below `max_shard_bytes`.
@@ -153,6 +153,7 @@ def variable_axis_size_partitioner(
   return _partitioner
 
 
+@tf_export("min_max_variable_partitioner")
 def min_max_variable_partitioner(max_partitions=1, axis=0,
                                  min_slice_size=256 << 10,
                                  bytes_per_string_element=16):
@@ -216,6 +217,7 @@ def min_max_variable_partitioner(max_partitions=1, axis=0,
   return _partitioner
 
 
+@tf_export("fixed_size_partitioner")
 def fixed_size_partitioner(num_shards, axis=0):
   """Partitioner to specify a fixed number of shards along given axis.
 
@@ -234,6 +236,7 @@ def fixed_size_partitioner(num_shards, axis=0):
   return _partitioner
 
 
+@tf_export("create_partitioned_variables")
 def create_partitioned_variables(
     shape, slicing, initializer, dtype=dtypes.float32,
     trainable=True, collections=None, name=None, reuse=None):
@@ -265,7 +268,7 @@ def create_partitioned_variables(
     trainable: If True also add all the variables to the graph collection
       `GraphKeys.TRAINABLE_VARIABLES`.
     collections: List of graph collections keys to add the variables to.
-      Defaults to `[GraphKeys.VARIABLES]`.
+      Defaults to `[GraphKeys.GLOBAL_VARIABLES]`.
     name: Optional name for the full variable.  Defaults to
       `"PartitionedVariable"` and gets uniquified automatically.
     reuse: Boolean or `None`; if `True` and name is set, it would reuse
@@ -306,5 +309,5 @@ def create_partitioned_variables(
         trainable=trainable,
         partitioner=partitioner,
         collections=collections)
-    return partitioned_var._get_variable_list()
+    return list(partitioned_var)
     # pylint: enable=protected-access

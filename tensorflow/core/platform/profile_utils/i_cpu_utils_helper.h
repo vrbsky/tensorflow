@@ -13,8 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_PLATFORM_PROFILEUTILS_I_CPU_UTILS_HELPER_H__
-#define TENSORFLOW_PLATFORM_PROFILEUTILS_I_CPU_UTILS_HELPER_H__
+#ifndef TENSORFLOW_CORE_PLATFORM_PROFILE_UTILS_I_CPU_UTILS_HELPER_H_
+#define TENSORFLOW_CORE_PLATFORM_PROFILE_UTILS_I_CPU_UTILS_HELPER_H_
 
 #include "tensorflow/core/platform/macros.h"
 #include "tensorflow/core/platform/types.h"
@@ -24,13 +24,11 @@ namespace profile_utils {
 
 // ICpuUtilsHelper is an interface class for cpu_utils which proxies
 // the difference of profiling functions of different platforms.
+// Overridden functions must be thread safe.
 class ICpuUtilsHelper {
  public:
   ICpuUtilsHelper() = default;
   virtual ~ICpuUtilsHelper() = default;
-  // Initialize CpuUtilsHelper.
-  // This method is called only once when CpuUtils is loaded.
-  virtual void Initialize() = 0;
   // Reset clock cycle.
   // Resetting clock cycle is recommended to prevent
   // clock cycle counters from overflowing on some platforms.
@@ -39,13 +37,17 @@ class ICpuUtilsHelper {
   virtual uint64 GetCurrentClockCycle() = 0;
   // Enable clock cycle profile
   // You can enable / disable profile if it's supported by the platform
-  virtual void EnableClockCycleProfile(bool enable) = 0;
+  virtual void EnableClockCycleProfiling(bool enable) = 0;
+  // Return cpu frequency.
+  // CAVEAT: as this method may read file and/or call system calls,
+  // this call is supposed to be slow.
+  virtual int64 CalculateCpuFrequency() = 0;
 
  private:
   TF_DISALLOW_COPY_AND_ASSIGN(ICpuUtilsHelper);
 };
 
-}  // profile_utils
-}  // tensorflow
+}  // namespace profile_utils
+}  // namespace tensorflow
 
-#endif  // TENSORFLOW_PLATFORM_PROFILEUTILS_I_CPU_UTILS_HELPER_H__
+#endif  // TENSORFLOW_CORE_PLATFORM_PROFILE_UTILS_I_CPU_UTILS_HELPER_H_

@@ -13,11 +13,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_COMMON_RUNTIME_VISITABLE_ALLOCATOR_H_
-#define TENSORFLOW_COMMON_RUNTIME_VISITABLE_ALLOCATOR_H_
+#ifndef TENSORFLOW_CORE_COMMON_RUNTIME_VISITABLE_ALLOCATOR_H_
+#define TENSORFLOW_CORE_COMMON_RUNTIME_VISITABLE_ALLOCATOR_H_
 
 #include <functional>
 #include "tensorflow/core/framework/allocator.h"
+#include "tensorflow/core/framework/tracking_allocator.h"
 
 namespace tensorflow {
 
@@ -41,5 +42,38 @@ class VisitableAllocator : public Allocator {
   // memory returned to the underlying device.
   virtual void AddFreeVisitor(Visitor visitor) = 0;
 };
+
+// Needed for cases when a VisitableAllocator gets wrapped for tracking.
+// Multiple-inheritance is considered acceptable in this case because
+// VisitableAllocator is a pure virtual interface and only TrackingAllocator
+// has default implementation.
+class TrackingVisitableAllocator : public TrackingAllocator,
+                                   public VisitableAllocator {
+ public:
+  TrackingVisitableAllocator(VisitableAllocator* allocator, bool track_ids)
+      : TrackingAllocator(allocator, track_ids), allocator_(allocator) {}
+  ~TrackingVisitableAllocator() override {}
+
+  string Name() override { return TrackingAllocator::Name(); }
+
+  void* AllocateRaw(size_t alignment, size_t num_bytes) override {
+    return TrackingAllocator::AllocateRaw(alignment, num_bytes);
+  }
+
+  void DeallocateRaw(void* ptr) override {
+    TrackingAllocator::DeallocateRaw(ptr);
+  }
+
+  void AddAllocVisitor(Visitor visitor) override {
+    allocator_->AddAllocVisitor(visitor);
+  }
+
+  void AddFreeVisitor(Visitor visitor) override {
+    allocator_->AddFreeVisitor(visitor);
+  }
+
+ protected:
+  VisitableAllocator* allocator_;
+};
 }  // namespace tensorflow
-#endif  // TENSORFLOW_COMMON_RUNTIME_VISITABLE_ALLOCATOR_H_
+#endif  // TENSORFLOW_CORE_COMMON_RUNTIME_VISITABLE_ALLOCATOR_H_

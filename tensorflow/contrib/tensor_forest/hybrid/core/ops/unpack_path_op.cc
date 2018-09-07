@@ -13,32 +13,43 @@
 // limitations under the License.
 // =============================================================================
 
-#include <stdlib.h>
-#include <time.h>
-#include <algorithm>
-#include <cmath>
-#include <memory>
-#include <unordered_map>
-#include <unordered_set>
-#include <utility>
-#include <vector>
-
-#include "tensorflow/contrib/tensor_forest/core/ops/tree_utils.h"
 #include "tensorflow/contrib/tensor_forest/hybrid/core/ops/utils.h"
+#include "tensorflow/contrib/tensor_forest/kernels/tree_utils.h"
 #include "tensorflow/core/framework/op.h"
 #include "tensorflow/core/framework/op_kernel.h"
+#include "tensorflow/core/framework/shape_inference.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/lib/gtl/top_n.h"
+#include "tensorflow/core/lib/math/math_util.h"
 #include "tensorflow/core/platform/types.h"
 #include "tensorflow/core/util/work_sharder.h"
 
 namespace tensorflow {
 
+using shape_inference::InferenceContext;
+using shape_inference::ShapeHandle;
+
 REGISTER_OP("UnpackPath")
-  .Input("path: int32")
-  .Input("path_values: float")
-  .Output("unpacked_path: float")
-  .Doc(R"doc(
+    .Input("path: int32")
+    .Input("path_values: float")
+    .Output("unpacked_path: float")
+    .SetShapeFn([](InferenceContext* c) {
+      ShapeHandle input, params;
+      TF_RETURN_IF_ERROR(c->WithRankAtLeast(c->input(0), 1, &input));
+      TF_RETURN_IF_ERROR(c->WithRankAtLeast(c->input(1), 2, &params));
+
+      auto num_points = c->Dim(input, 0);
+
+      auto tree_depth = c->Dim(params, 1);
+      int64 num_nodes = InferenceContext::kUnknownDim;
+      if (c->ValueKnown(tree_depth)) {
+        num_nodes = (static_cast<int64>(1) << c->Value(tree_depth)) - 1;
+      }
+
+      c->set_output(0, c->Matrix(num_points, num_nodes));
+      return Status::OK();
+    })
+    .Doc(R"doc(
   Takes a batch of paths through a tree and a batch of values along those paths
   and returns a batch_size by num_nodes encoding of the path values.
 
@@ -53,8 +64,7 @@ REGISTER_OP("UnpackPath")
 
 class UnpackPath : public OpKernel {
  public:
-  explicit UnpackPath(OpKernelConstruction* context)
-      : OpKernel(context) {}
+  explicit UnpackPath(OpKernelConstruction* context) : OpKernel(context) {}
 
   void Compute(OpKernelContext* context) override {
     VLOG(1) << "unpack start";
@@ -62,10 +72,10 @@ class UnpackPath : public OpKernel {
     const Tensor& path_values_tensor = context->input(1);
 
     const int32 num_data = static_cast<int32>(path_tensor.shape().dim_size(0));
-    const int32 tree_depth = static_cast<int32>(
-        path_tensor.shape().dim_size(1));
+    const int32 tree_depth =
+        static_cast<int32>(path_tensor.shape().dim_size(1));
 
-    const int32 num_nodes = pow(2, tree_depth) - 1;
+    const int32 num_nodes = MathUtil::IPow(2, tree_depth) - 1;
 
     VLOG(1) << "num_data: " << num_data;
     VLOG(1) << "tree_depth: " << tree_depth;
@@ -96,6 +106,6 @@ class UnpackPath : public OpKernel {
   }
 };
 
-REGISTER_KERNEL_BUILDER(Name("UnpackPath").Device(DEVICE_CPU),
-                        UnpackPath);
+REGISTER_KERNEL_BUILDER(Name("UnpackPath").Device(DEVICE_CPU), UnpackPath);
+
 }  // namespace tensorflow

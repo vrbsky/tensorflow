@@ -13,31 +13,46 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_COMMON_RUNTIME_LOCAL_DEVICE_H_
-#define TENSORFLOW_COMMON_RUNTIME_LOCAL_DEVICE_H_
+#ifndef TENSORFLOW_CORE_COMMON_RUNTIME_LOCAL_DEVICE_H_
+#define TENSORFLOW_CORE_COMMON_RUNTIME_LOCAL_DEVICE_H_
 
 #include "tensorflow/core/common_runtime/device.h"
+#include "tensorflow/core/common_runtime/tracing_device.h"
 #include "tensorflow/core/framework/device_attributes.pb.h"
 #include "tensorflow/core/platform/macros.h"
 
 namespace tensorflow {
 
+namespace test {
+class Benchmark;
+}
 struct SessionOptions;
 
 // This class is shared by ThreadPoolDevice and GPUDevice and
 // initializes a shared Eigen compute device used by both.  This
 // should eventually be removed once we refactor ThreadPoolDevice and
 // GPUDevice into more 'process-wide' abstractions.
-class LocalDevice : public Device {
+class LocalDevice : public TracingDevice {
  public:
-  LocalDevice(const SessionOptions& options, const DeviceAttributes& attributes,
-              Allocator* device_allocator);
-  ~LocalDevice() override {}
+  LocalDevice(const SessionOptions& options,
+              const DeviceAttributes& attributes);
+  ~LocalDevice() override;
 
  private:
+  static bool use_global_threadpool_;
+
+  static void set_use_global_threadpool(bool use_global_threadpool) {
+    use_global_threadpool_ = use_global_threadpool;
+  }
+
+  struct EigenThreadPoolInfo;
+  std::unique_ptr<EigenThreadPoolInfo> owned_tp_info_;
+
+  friend class test::Benchmark;
+
   TF_DISALLOW_COPY_AND_ASSIGN(LocalDevice);
 };
 
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_COMMON_RUNTIME_LOCAL_DEVICE_H_
+#endif  // TENSORFLOW_CORE_COMMON_RUNTIME_LOCAL_DEVICE_H_

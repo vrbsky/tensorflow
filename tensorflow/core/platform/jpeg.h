@@ -18,14 +18,17 @@ limitations under the License.
 
 #include "tensorflow/core/platform/platform.h"
 
-#if defined(PLATFORM_GOOGLE)
+#if defined(PLATFORM_GOOGLE) && !defined(IS_MOBILE_PLATFORM)
 #include "tensorflow/core/platform/google/build_config/jpeg.h"
-#elif defined(PLATFORM_POSIX) && !defined(IS_MOBILE_PLATFORM)
+#elif defined(PLATFORM_POSIX) || defined(PLATFORM_WINDOWS) || \
+    defined(PLATFORM_POSIX_ANDROID) || defined(IS_MOBILE_PLATFORM)
+#include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/types.h>
 extern "C" {
-#include "jpeg-9a/jerror.h"
-#include "jpeg-9a/jinclude.h"
-#include "jpeg-9a/jpeglib.h"
-#include "jpeg-9a/transupp.h"  // for rotations
+#include "jerror.h"
+#include "jpeglib.h"
 }
 #else
 #error Define the appropriate PLATFORM_<foo> macro for this platform

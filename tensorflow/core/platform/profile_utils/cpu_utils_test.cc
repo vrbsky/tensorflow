@@ -16,6 +16,7 @@ limitations under the License.
 
 #include "tensorflow/core/platform/profile_utils/cpu_utils.h"
 #include "tensorflow/core/platform/logging.h"
+#include "tensorflow/core/platform/profile_utils/clock_cycle_profiler.h"
 #include "tensorflow/core/platform/test.h"
 
 namespace tensorflow {
@@ -23,7 +24,16 @@ namespace profile_utils {
 
 static constexpr bool DBG = false;
 
-TEST(CpuUtils, CheckGetCurrentClockCycle) {
+class CpuUtilsTest : public ::testing::Test {
+ protected:
+  void SetUp() override { CpuUtils::EnableClockCycleProfiling(true); }
+};
+
+TEST_F(CpuUtilsTest, SetUpTestCase) {}
+
+TEST_F(CpuUtilsTest, TearDownTestCase) {}
+
+TEST_F(CpuUtilsTest, CheckGetCurrentClockCycle) {
   static constexpr int LOOP_COUNT = 10;
   const uint64 start_clock_count = CpuUtils::GetCurrentClockCycle();
   CHECK_GT(start_clock_count, 0);
@@ -42,28 +52,41 @@ TEST(CpuUtils, CheckGetCurrentClockCycle) {
   }
 }
 
-TEST(CpuUtils, CheckCpuFrequency) {
-  const int64 cpu_frequency = CpuUtils::GetCpuFrequency();
+TEST_F(CpuUtilsTest, CheckCycleCounterFrequency) {
+#if (defined(__powerpc__) ||                                             \
+     defined(__ppc__) && (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)) || \
+    (defined(__s390x__))
+  const uint64 cpu_frequency = CpuUtils::GetCycleCounterFrequency();
+  CHECK_GT(cpu_frequency, 0);
+  CHECK_NE(cpu_frequency, unsigned(CpuUtils::INVALID_FREQUENCY));
+#else
+  const int64 cpu_frequency = CpuUtils::GetCycleCounterFrequency();
   CHECK_GT(cpu_frequency, 0);
   CHECK_NE(cpu_frequency, CpuUtils::INVALID_FREQUENCY);
+#endif
   if (DBG) {
     LOG(INFO) << "Cpu frequency = " << cpu_frequency;
   }
 }
 
-TEST(CpuUtils, CheckClockPerMicroSec) {
-  const int clock_per_micro_sec = CpuUtils::GetClockPerMicroSec();
-  CHECK_GT(clock_per_micro_sec, 0);
-  if (DBG) {
-    LOG(INFO) << "Clock per micro sec = " << clock_per_micro_sec;
-  }
-}
-
-TEST(CpuUtils, CheckMicroSecPerClock) {
+TEST_F(CpuUtilsTest, CheckMicroSecPerClock) {
   const double micro_sec_per_clock = CpuUtils::GetMicroSecPerClock();
   CHECK_GT(micro_sec_per_clock, 0.0);
   if (DBG) {
     LOG(INFO) << "Micro sec per clock = " << micro_sec_per_clock;
+  }
+}
+
+TEST_F(CpuUtilsTest, SimpleUsageOfClockCycleProfiler) {
+  static constexpr int LOOP_COUNT = 10;
+  ClockCycleProfiler prof;
+  for (int i = 0; i < LOOP_COUNT; ++i) {
+    prof.Start();
+    prof.Stop();
+  }
+  EXPECT_EQ(LOOP_COUNT, static_cast<int>(prof.GetCount() + 0.5));
+  if (DBG) {
+    prof.DumpStatistics("CpuUtilsTest");
   }
 }
 

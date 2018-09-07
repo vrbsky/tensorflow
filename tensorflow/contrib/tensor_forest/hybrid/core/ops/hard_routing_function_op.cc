@@ -25,21 +25,20 @@
 #include <utility>
 #include <vector>
 
-#include "tensorflow/contrib/tensor_forest/core/ops/tree_utils.h"
 #include "tensorflow/contrib/tensor_forest/hybrid/core/ops/utils.h"
+#include "tensorflow/contrib/tensor_forest/kernels/tree_utils.h"
 #include "tensorflow/core/framework/op.h"
 #include "tensorflow/core/framework/op_kernel.h"
+#include "tensorflow/core/framework/shape_inference.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/lib/gtl/top_n.h"
 #include "tensorflow/core/platform/types.h"
 #include "tensorflow/core/util/work_sharder.h"
 
-
 namespace tensorflow {
 
-using tensorforest::CHILDREN_INDEX;
-using tensorforest::FEATURE_INDEX;
-using tensorforest::LEAF_NODE;
+using shape_inference::InferenceContext;
+using shape_inference::ShapeHandle;
 
 using tensorforest::CheckTensorBounds;
 using tensorforest::LeftProbability;
@@ -48,14 +47,25 @@ using tensorforest::LeftProbability;
 // that an instance is routed to each leaf node.'  It is defined in
 // 'Deep Neural Decision Forests' by Kontschieder et al.
 REGISTER_OP("HardRoutingFunction")
-  .Attr("max_nodes: int")
-  .Attr("tree_depth: int")
-  .Input("input_data: float")
-  .Input("tree_parameters: float")
-  .Input("tree_biases: float")
-  .Output("path_probability: float")
-  .Output("path: int32")
-  .Doc(R"doc(
+    .Attr("max_nodes: int")
+    .Attr("tree_depth: int")
+    .Input("input_data: float")
+    .Input("tree_parameters: float")
+    .Input("tree_biases: float")
+    .Output("path_probability: float")
+    .Output("path: int32")
+    .SetShapeFn([](InferenceContext* c) {
+      ShapeHandle input;
+      TF_RETURN_IF_ERROR(c->WithRankAtLeast(c->input(0), 1, &input));
+      int64 tree_depth;
+      TF_RETURN_IF_ERROR(c->GetAttr("tree_depth", &tree_depth));
+
+      auto out = c->Matrix(c->Dim(input, 0), tree_depth);
+      c->set_output(0, out);
+      c->set_output(1, out);
+      return Status::OK();
+    })
+    .Doc(R"doc(
   Chooses a single path for each instance in `input_data` and returns the leaf
   the probability of the path and the path taken.
 
@@ -70,7 +80,7 @@ REGISTER_OP("HardRoutingFunction")
    regression model that translates from node features to
    probabilities.
 
-  path_probility: `path_probability[i]` gives the probability of reaching each
+  path_probability: `path_probability[i]` gives the probability of reaching each
    node in `path[i]`.
   path: `path[i][j]` gives the jth node in the path taken by the ith data
    instance.
@@ -89,18 +99,17 @@ class HardRoutingFunction : public OpKernel {
     const Tensor& tree_biases_tensor = context->input(2);
 
     if (input_data.shape().dim_size(0) > 0) {
-      OP_REQUIRES(context, input_data.shape().dims() == 2,
-                  errors::InvalidArgument(
-                      "input_data should be two-dimensional"));
+      OP_REQUIRES(
+          context, input_data.shape().dims() == 2,
+          errors::InvalidArgument("input_data should be two-dimensional"));
     }
 
     // Check tensor bounds.
     if (!CheckTensorBounds(context, input_data)) return;
 
-    const int32 num_data = static_cast<int32>(
-        input_data.shape().dim_size(0));
-    const int32 num_features = static_cast<int32>(
-        input_data.shape().dim_size(1));
+    const int32 num_data = static_cast<int32>(input_data.shape().dim_size(0));
+    const int32 num_features =
+        static_cast<int32>(input_data.shape().dim_size(1));
 
     Tensor* output_probability = nullptr;
     TensorShape output_probability_shape;
@@ -115,9 +124,8 @@ class HardRoutingFunction : public OpKernel {
     OP_REQUIRES_OK(context,
                    context->allocate_output(0, output_probability_shape,
                                             &output_probability));
-    OP_REQUIRES_OK(context,
-                   context->allocate_output(1, output_path_shape,
-                                            &output_path));
+    OP_REQUIRES_OK(
+        context, context->allocate_output(1, output_path_shape, &output_path));
 
     auto out_probability = output_probability->tensor<float, 2>();
     auto out_path = output_path->tensor<int32, 2>();
@@ -134,12 +142,11 @@ class HardRoutingFunction : public OpKernel {
       out_probability(i, 0) = 1.0;
       out_path(i, 0) = 0;
       for (int j = 0; j < tree_depth_ - 1; j++) {
-        float left_prob = LeftProbability(point,
-                                          tree_parameters_tensor.Slice(j, j+1),
-                                          tree_biases(j),
-                                          num_features);
+        float left_prob =
+            LeftProbability(point, tree_parameters_tensor.Slice(j, j + 1),
+                            tree_biases(j), num_features);
 
-        int32 left_child = 2*node + 1;
+        int32 left_child = 2 * node + 1;
         int32 right_child = left_child + 1;
 
         float dot_product = 0.0;

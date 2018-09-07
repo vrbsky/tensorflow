@@ -14,77 +14,110 @@ limitations under the License.
 ==============================================================================*/
 
 #include "tensorflow/core/platform/profile_utils/cpu_utils.h"
+
+#include <fstream>
+#include <limits>
+#include <mutex>
+
+#if defined(_WIN32)
+#include <windows.h>
+#endif
+
 #include "tensorflow/core/platform/logging.h"
+#include "tensorflow/core/platform/profile_utils/android_armv7a_cpu_utils_helper.h"
 
 namespace tensorflow {
 namespace profile_utils {
 
-namespace {
-
-const class StaticVariableInitializer {
- public:
-  StaticVariableInitializer() { CpuUtils::Initialize(); }
-} STATIC_VARIABLE_INITIALIZER;
-
-}  // anonymous namespace for initializer
-
 /* static */ constexpr int64 CpuUtils::INVALID_FREQUENCY;
 
-/* static */ int64 CpuUtils::GetCpuFrequency() {
-  static const int64 cpu_frequency = GetCpuFrequencyImpl();
+static ICpuUtilsHelper* cpu_utils_helper_instance_ = nullptr;
+
+#if (defined(__powerpc__) ||                                             \
+     defined(__ppc__) && (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)) || \
+    (defined(__s390x__))
+/* static */ uint64 CpuUtils::GetCycleCounterFrequency() {
+  static const uint64 cpu_frequency = GetCycleCounterFrequencyImpl();
   return cpu_frequency;
 }
-
-/* static */ int CpuUtils::GetClockPerMicroSec() {
-  static const int clock_per_micro_sec =
-      static_cast<int>(GetCpuFrequency() / (1000LL * 1000LL));
-  return clock_per_micro_sec;
+#else
+/* static */ int64 CpuUtils::GetCycleCounterFrequency() {
+  static const int64 cpu_frequency = GetCycleCounterFrequencyImpl();
+  return cpu_frequency;
 }
+#endif
 
 /* static */ double CpuUtils::GetMicroSecPerClock() {
   static const double micro_sec_per_clock =
-      (1000.0 * 1000.0) / static_cast<double>(GetCpuFrequency());
+      (1000.0 * 1000.0) / static_cast<double>(GetCycleCounterFrequency());
   return micro_sec_per_clock;
 }
 
-/* static */ void CpuUtils::Initialize() {
-  CpuUtils::GetCpuFrequency();
-  CpuUtils::GetClockPerMicroSec();
-  CpuUtils::GetMicroSecPerClock();
-  GetCpuUtilsHelper().Initialize();
-}
-
 /* static */ void CpuUtils::ResetClockCycle() {
-  GetCpuUtilsHelper().ResetClockCycle();
+  GetCpuUtilsHelperSingletonInstance().ResetClockCycle();
 }
 
-/* static */ void CpuUtils::EnableClockCycleProfile(const bool enable) {
-  GetCpuUtilsHelper().EnableClockCycleProfile(enable);
+/* static */ void CpuUtils::EnableClockCycleProfiling(const bool enable) {
+  GetCpuUtilsHelperSingletonInstance().EnableClockCycleProfiling(enable);
 }
 
-/* static */ int64 CpuUtils::GetCpuFrequencyImpl() {
-#if defined(__linux__)
-  double bogomips;
-  FILE* fp = popen("grep '^bogomips' /proc/cpuinfo | head -1", "r");
-  const int retval_of_bogomips = fscanf(fp, "bogomips : %lf", &bogomips);
-  pclose(fp);
-  const double freq_ghz = bogomips / 1000.0 / 2.0;
-  if (retval_of_bogomips != 1 || freq_ghz < 0.01) {
-    LOG(WARNING) << "Failed to get CPU frequency: " << freq_ghz << " Hz";
+/* static */ std::chrono::duration<double> CpuUtils::ConvertClockCycleToTime(
+    const int64 clock_cycle) {
+  return std::chrono::duration<double>(static_cast<double>(clock_cycle) /
+                                       GetCycleCounterFrequency());
+}
+
+/* static */ int64 CpuUtils::GetCycleCounterFrequencyImpl() {
+// TODO(satok): do not switch by macro here
+#if defined(__ANDROID__)
+  return GetCpuUtilsHelperSingletonInstance().CalculateCpuFrequency();
+#elif defined(__linux__)
+  // Read the contents of /proc/cpuinfo.
+  std::ifstream cpuinfo("/proc/cpuinfo");
+  if (!cpuinfo) {
+    LOG(WARNING) << "Failed to open /proc/cpuinfo";
     return INVALID_FREQUENCY;
   }
-  return static_cast<int64>(freq_ghz * 1000.0 * 1000.0 * 1000.0);
+  string line;
+  while (std::getline(cpuinfo, line)) {
+    double bogomips;
+    const int retval_of_bogomips =
+        sscanf(line.c_str(), "bogomips : %lf", &bogomips);
+    if (retval_of_bogomips > 0) {
+      const double freq_ghz = bogomips / 1000.0 / 2.0;
+      if (retval_of_bogomips != 1 || freq_ghz < 0.01) {
+        LOG(WARNING) << "Failed to get CPU frequency: " << freq_ghz << " Hz";
+        return INVALID_FREQUENCY;
+      }
+      const int64 freq_n =
+          static_cast<int64>(freq_ghz * 1000.0 * 1000.0 * 1000.0);
+      LOG(INFO) << "CPU Frequency: " << freq_n << " Hz";
+      return freq_n;
+    }
+  }
+  LOG(WARNING) << "Failed to find bogomips in /proc/cpuinfo; cannot determine "
+                  "CPU frequency";
+  return INVALID_FREQUENCY;
 #elif defined(__APPLE__)
   int64 freq_hz;
   FILE* fp =
       popen("sysctl hw | grep hw.cpufrequency_max: | cut -d' ' -f 2", "r");
-  fscanf(fp, "%lld", &freq_hz);
+  if (fp == nullptr) {
+    return INVALID_FREQUENCY;
+  }
+  if (fscanf(fp, "%lld", &freq_hz) != 1) {
+    return INVALID_FREQUENCY;
+  }
   pclose(fp);
   if (freq_hz < 1e6) {
     LOG(WARNING) << "Failed to get CPU frequency: " << freq_hz << " Hz";
     return INVALID_FREQUENCY;
   }
   return freq_hz;
+#elif defined(_WIN32)
+  LARGE_INTEGER freq;
+  QueryPerformanceFrequency(&freq);
+  return freq.QuadPart;
 #else
   // TODO(satok): Support other OS if needed
   // Return INVALID_FREQUENCY on unsupported OS
@@ -92,10 +125,20 @@ const class StaticVariableInitializer {
 #endif
 }
 
-/* static */ ICpuUtilsHelper& CpuUtils::GetCpuUtilsHelper() {
-  // TODO(satok): Change CpuUtilsHelper by cpu architecture
-  static DefaultCpuUtilsHelper cpu_utils_helper;
-  return cpu_utils_helper;
+/* static */ ICpuUtilsHelper& CpuUtils::GetCpuUtilsHelperSingletonInstance() {
+  static std::once_flag flag;
+  std::call_once(flag, []() {
+    if (cpu_utils_helper_instance_ != nullptr) {
+      LOG(FATAL) << "cpu_utils_helper_instance_ is already instantiated.";
+    }
+#if defined(__ANDROID__) && (__ANDROID_API__ >= 21) && \
+    (defined(__ARM_ARCH_7A__) || defined(__aarch64__))
+    cpu_utils_helper_instance_ = new AndroidArmV7ACpuUtilsHelper();
+#else
+      cpu_utils_helper_instance_ = new DefaultCpuUtilsHelper();
+#endif
+  });
+  return *cpu_utils_helper_instance_;
 }
 
 }  // namespace profile_utils

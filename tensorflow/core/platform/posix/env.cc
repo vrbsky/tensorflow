@@ -16,6 +16,7 @@ limitations under the License.
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <fnmatch.h>
 #include <stdio.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -43,7 +44,7 @@ class StdThread : public Thread {
   StdThread(const ThreadOptions& thread_options, const string& name,
             std::function<void()> fn)
       : thread_(fn) {}
-  ~StdThread() { thread_.join(); }
+  ~StdThread() override { thread_.join(); }
 
  private:
   std::thread thread_;
@@ -55,10 +56,8 @@ class PosixEnv : public Env {
 
   ~PosixEnv() override { LOG(FATAL) << "Env::Default() must not be destroyed"; }
 
-  uint64 NowMicros() override {
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    return static_cast<uint64>(tv.tv_sec) * 1000000 + tv.tv_usec;
+  bool MatchPath(const string& path, const string& pattern) override {
+    return fnmatch(pattern.c_str(), path.c_str(), FNM_PATHNAME) == 0;
   }
 
   void SleepForMicroseconds(int64 micros) override {
@@ -114,6 +113,14 @@ class PosixEnv : public Env {
     return tensorflow::internal::GetSymbolFromLibrary(handle, symbol_name,
                                                       symbol);
   }
+
+  string FormatLibraryFileName(const string& name,
+                               const string& version) override {
+    return tensorflow::internal::FormatLibraryFileName(name, version);
+  }
+
+ private:
+  void GetLocalTempDirectories(std::vector<string>* list) override;
 };
 
 }  // namespace
@@ -126,5 +133,44 @@ Env* Env::Default() {
   return default_env;
 }
 #endif
+
+void PosixEnv::GetLocalTempDirectories(std::vector<string>* list) {
+  list->clear();
+  // Directories, in order of preference. If we find a dir that
+  // exists, we stop adding other less-preferred dirs
+  const char* candidates[] = {
+    // Non-null only during unittest/regtest
+    getenv("TEST_TMPDIR"),
+
+    // Explicitly-supplied temp dirs
+    getenv("TMPDIR"),
+    getenv("TMP"),
+
+#if defined(__ANDROID__)
+    "/data/local/tmp",
+#endif
+
+    // If all else fails
+    "/tmp",
+  };
+
+  for (const char* d : candidates) {
+    if (!d || d[0] == '\0') continue;  // Empty env var
+
+    // Make sure we don't surprise anyone who's expecting a '/'
+    string dstr = d;
+    if (dstr[dstr.size() - 1] != '/') {
+      dstr += "/";
+    }
+
+    struct stat statbuf;
+    if (!stat(d, &statbuf) && S_ISDIR(statbuf.st_mode) &&
+        !access(dstr.c_str(), 0)) {
+      // We found a dir that exists and is accessible - we're done.
+      list->push_back(dstr);
+      return;
+    }
+  }
+}
 
 }  // namespace tensorflow
